@@ -30,7 +30,7 @@ pip install parivaha
 
 ### Quick Start
 ```
-from tarana import sync
+from parivaha import sync
 ```
 
 ### Sync from Notion to Obsidian
