@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "parivaha"
+version = "0.1.2"
+description = ""
+authors = ["Suhail <suhailece@gmail.com>"]
+readme = "README.md"
+packages = [{include = "parivaha", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
