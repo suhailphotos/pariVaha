@@ -1,12 +1,12 @@
-# taRana
+# pariVaha
 
-**taRana** (तरन) is a Python package designed to seamlessly sync, transfer, and manage your knowledge between Notion databases and Obsidian vaults.
+**pariVaha** (परिवाह) is a Python package designed to seamlessly sync, transfer, and manage your knowledge between Notion databases and Obsidian vaults.
 
 ---
 
-## What is taRana?
+## What is pariVaha?
 
-taRana bridges the gap between your Notion and Obsidian knowledge bases, enabling effortless bidirectional transfer and synchronization of notes, pages, and metadata. Whether you want to migrate your digital mind map, keep your notes in sync, or automate your knowledge workflows, taRana has you covered.
+pariVaha bridges the gap between your Notion and Obsidian knowledge bases, enabling effortless bidirectional transfer and synchronization of notes, pages, and metadata. Whether you want to migrate your digital mind map, keep your notes in sync, or automate your knowledge workflows, pariVaha has you covered.
 
 ---
 
@@ -16,13 +16,14 @@ taRana bridges the gap between your Notion and Obsidian knowledge bases, enablin
 - **Metadata Preservation**: Retain tags, links, and structure during transfer.
 - **Custom Mapping**: Configure how your Notion properties map to Obsidian frontmatter or folders.
 - **Conflict Resolution**: Smart handling of updates and changes on both sides.
-- **Automation Ready**: Integrate taRana into your workflows or CI pipelines.
+- **Automation Ready**: Integrate pariVaha into your workflows or CI pipelines.
 
 ---
 
 ## Installation
+
 ```
-pip install tarana
+pip install parivaha
 ```
 
 ---
@@ -50,9 +51,9 @@ See the [Documentation](docs/README.md) for advanced configuration, mapping opti
 
 ---
 
-## Why "taRana"?
+## Why "pariVaha"?
 
-In Sanskrit, "Tarana" means "to ferry" or "to transfer across." This package is your digital boat, carrying your knowledge smoothly between Notion and Obsidian.
+In Sanskrit, "Parivaha" means "to carry, transport, or convey." This package is your digital vehicle, carrying your knowledge smoothly between Notion and Obsidian.
 
 ---
 
@@ -70,11 +71,6 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 
 ## Inspiration
 
-taRana is inspired by the vision of a unified, portable second brain—where your knowledge flows freely between platforms, just as ideas flow within your mind.
+pariVaha is inspired by the vision of a unified, portable second brain—where your knowledge flows freely between platforms, just as ideas flow within your mind.
 
 ---
-
-
-
-
-
