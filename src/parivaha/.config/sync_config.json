@@ -1,0 +1,47 @@
+{
+  "vaults": [
+    {
+      "name": "jnanaKosha",
+      "path": "$DROPBOX/matrix/obsidian/jnanaKosha",
+      "database": {
+        "type": "notion",
+        "notion": {
+          "id": "208a1865-b187-8104-bf37-e35bc4fa40d9",
+          "name": "Jñāna Kosha",
+          "sub-items": true,
+          "forward_mapping": {
+            "id":            { "target": "id",          "return": "str" },
+            "icon":          { "target": "icon",        "return": "object" },
+            "cover":         { "target": "cover",       "return": "object" },
+            "Name":          { "target": "name",        "type": "title",     "return": "str" },
+            "Obsidian Path": { "target": "path",        "type": "rich_text", "return": "str" },
+            "Tags":          { "target": "tags",        "type": "multi_select", "return": "list" },
+            "Status":        { "target": "status",      "type": "status",     "return": "str" },
+            "Last Synced":   { "target": "last_synced", "type": "date",       "return": "str" }
+          },
+          "back_mapping": {
+            "icon":        { "target": "icon",           "return": "object" },
+            "cover":       { "target": "cover",          "return": "object" },
+            "name":        { "target": "Name",           "type": "title", "return": "str" },
+            "path":        { "target": "Obsidian Path",  "type": "rich_text", "return": "str", "code": true },
+            "tags":        { "target": "Tags",           "type": "multi_select", "return": "list", "default": ["#branch"] },
+            "status":      { "target": "Status",         "type": "status", "return": "str", "default": "Not Synced" },
+            "last_synced": { "target": "Last Synced",    "type": "date",   "return": "str", "default": "//Sync computed at run time in YYYY-MM-DD" }
+          },
+          "icon": {
+            "type": "external",
+            "external": {
+              "url": "https://www.notion.so/icons/branch-fork_lightgray.svg"
+            }
+          },
+          "cover": {
+            "type": "external",
+            "external": {
+              "url": "https://res.cloudinary.com/dicttuyma/image/upload/w_1500,h_600,c_fill,g_auto/v1742094841/banner/notion_15.jpg"
+            }
+          }
+        }
+      }
+    }
+  ]
+}
