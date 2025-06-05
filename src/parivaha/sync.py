@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, List
 
 import time
 import click
+from datetime import date
 try:
     from tqdm import tqdm  # nicer progress bar
 except ModuleNotFoundError:  # graceful fallback
@@ -32,7 +33,7 @@ class SyncService:
             start = time.perf_counter()
 
             reader  = ObsidianReader(v.path)
-            writer  = ObsidianWriter(v.path)
+            writer  = ObsidianWriter(v.path, back_map=v.backend.notion_db_config.back_mapping)
             backend = v.backend
 
             if direction in ("pull", "bidirectional"):
@@ -91,16 +92,17 @@ class SyncService:
 
             parent_page_id = self._find_parent_page_id(doc, path_to_page)
 
+            flat = {
+                "name": doc.title,
+                "path": str(doc.path.relative_to(reader.root)),
+                "tags": doc.front.get("tags", ["#branch"]),
+                "status": "Not Synced",
+                "last_synced": date.today().isoformat(),     # mapping turns into “Last Synced”
+                "icon": backend.notion_db_config.default_icon,
+                "cover": getattr(backend.notion_db_config, "default_cover", {}),
+            }
             payload = backend.notion_manager.build_notion_payload(
-                {
-                    "name": doc.title,
-                    "path": str(doc.path.relative_to(reader.root)),
-                    "tags": doc.front.get("tags", ["#branch"]),
-                    "status": "Not Synced",
-                    "icon": backend.notion_db_config.default_icon,
-                    "cover": getattr(backend.notion_db_config, "default_cover", {}),
-                },
-                backend.notion_db_config.back_mapping,
+                flat, backend.notion_db_config.back_mapping
             )
 
             if parent_page_id:
