@@ -1,0 +1,67 @@
+{
+  "trunk": [
+    { "name": "home", "tags": ["#super"] },
+    {
+      "name": "data",
+      "branches": {
+        "databases": {
+          "csv": {},
+          "json": {},
+          "mysql": {},
+          "postgreSQL": {},
+          "vectorDatabase": {}
+        },
+        "dataTypes": {
+          "images": {},
+          "text": {},
+          "tabular": {},
+          "audio": {},
+          "video": {}
+        },
+        "dataProcessing": {
+          "dataCleaning": {},
+          "featureEngineering": {},
+          "preprocessing": {
+            "imagePreprocessing": {},
+            "textPreprocessing": {},
+            "tabularPreprocessing": {}
+          },
+          "modeling": {
+            "architectures": {
+              "cnn": {},
+              "rnn": {},
+              "transformer": {},
+              "classicalMl": {}
+            },
+            "training": {
+              "hyperparameterTuning": {},
+              "optimization": {}
+            },
+            "evaluation": {
+              "metrics": {},
+              "validationTesting": {}
+            },
+            "deployment": {
+              "apiServing": {},
+              "monitoring": {},
+              "scaling": {}
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "ml",
+      "branches": {
+        "neuralNetworks": { "cnn": {} },
+        "dataProcessing": {}
+      }
+    },
+    {
+      "name": "vfx",
+      "branches": { "colorGrading": {} }
+    },
+    { "name": "web"  },
+    { "name": "math" }
+  ]
+}

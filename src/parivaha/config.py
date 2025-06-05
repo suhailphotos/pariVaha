@@ -14,12 +14,17 @@ PACKAGE_CONFIG = Path(__file__).parent / ".config"
 __all__ = ["CONFIG_DIR", "ENV_FILE", "SYNC_FILE", "bootstrap_user_config", "load_sync_config"]
 
 
+TEMPLATE_FILES = {
+    "env.example": ".env",
+    "sync_config.json": "sync_config.json",
+    "sample_payload.json": "sample_payload.json",
+}
+
 def bootstrap_user_config(overwrite: bool = False) -> None:
-    """Copy template .env & sync_config.json on first run."""
     CONFIG_DIR.mkdir(exist_ok=True)
-    for name in ("env.example", "sync_config.json"):
-        src = PACKAGE_CONFIG / name
-        dest = CONFIG_DIR / (".env" if name == "env.example" else name)
+    for src_name, dest_name in TEMPLATE_FILES.items():
+        src  = PACKAGE_CONFIG / src_name
+        dest = CONFIG_DIR     / dest_name
         if dest.exists() and not overwrite:
             continue
         shutil.copy2(src, dest)

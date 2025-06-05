@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import click
+import json
 from pathlib import Path
 from dotenv import load_dotenv
+from parivaha import seed
 
 from parivaha.config import CONFIG_DIR, ENV_FILE, SYNC_FILE, load_sync_config
 from parivaha.sync import SyncService
@@ -24,6 +26,17 @@ def init_cmd(overwrite: bool) -> None:
 
     bootstrap_user_config(overwrite)
     click.echo("✅ Configuration initialised at ~/.parivaha")
+
+@main.command("seed")
+@click.option(
+    "--payload",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Path to trunk/branch JSON (defaults to ~/.parivaha/sample_payload.json)",
+)
+def seed_cmd(payload: Path | None) -> None:
+    """Populate the target Notion DB with the sample trunk/branch structure."""
+    seed.run(payload)
 
 # ---------------------------------------------------------------------------
 # parivaha sync – run synchronisation
