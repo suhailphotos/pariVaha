@@ -12,6 +12,7 @@ click             = "^8.1"
 python-frontmatter= "^1.1"
 notionmanager     = "^0.1.24"
 python-dotenv     = "^1.0"
+tqdm              = "^4.67.1"
 
 [tool.poetry.scripts]
 parivaha = "parivaha.cli:main"
