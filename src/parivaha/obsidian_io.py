@@ -88,22 +88,27 @@ class ObsidianWriter:
         """
         target = self.root / page["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
-
+    
         # ----- YAML ----------------------------------------------------
         fm = {
             "notion_id":  page["id"],
             "last_synced": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             **({"tags": page["tags"]} if page.get("tags") else {}),
         }
-
+    
         # ----- Body with link ------------------------------------------
         body = page["content"]
-        if "[Open in Notion]" not in body:            # avoid duplicates
-            lines = body.splitlines()
-            if lines and lines[0].startswith("#"):
-                link_text = lines[0].lstrip("# ").strip() or "Open in Notion"
-                lines.insert(1, f"[{link_text}]({page['url']})")
-                body = "\n".join(lines)
-
+        lines = body.splitlines()
+        if lines and lines[0].startswith("#"):
+            link_text = lines[0].lstrip("# ").strip() or "Open in Notion"
+            # Always ensure the 2nd line is the Notion URL
+            # If line 2 already contains a Notion URL, replace it; else insert.
+            link_line = f"[{link_text}]({page['url']})"
+            if len(lines) > 1 and re.match(r"\[.*\]\(https://www.notion.so/", lines[1]):
+                lines[1] = link_line
+            else:
+                lines.insert(1, link_line)
+            body = "\n".join(lines)
+    
         text = frontmatter.dumps(frontmatter.Post(body, **fm))
         target.write_text(text, encoding="utf-8")
