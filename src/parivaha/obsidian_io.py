@@ -12,11 +12,7 @@ import frontmatter
 
 _NOTION_URL_PATTERN = re.compile(r"https://www\.notion\.so/[\w-]+-(?P<id>[0-9a-f]{32})")
 
-# ─── helper to map local->notion names using back-map ───────────────
-def pretty_name(local_key: str, back_map: dict[str, dict]) -> str:
-    """Return the Notion property name given our local field key."""
-    return back_map[local_key]["target"]
-# --------------------------------------------------------------------
+from parivaha.utils import notion_prop
 
 @dataclass
 class MdDoc:
@@ -43,7 +39,7 @@ class ObsidianReader:
 
     def scan(self) -> Dict[str, MdDoc]:
         docs = {}
-        for md in self.root.rglob("*.md"):
+        for md in (p for p in self.root.rglob("*.md") if ".obsidian" not in p.parts):
             post = frontmatter.load(md)
             body_hash = hashlib.md5(post.content.encode()).hexdigest()
             docs[str(md)] = MdDoc(md, post.metadata, post.content, body_hash)
@@ -62,7 +58,7 @@ class ObsidianWriter:
         """
         fm = dict(doc.front)
 
-        fm[pretty_name("last_synced", self.back_map)] = \
+        fm[notion_prop("last_synced", self.back_map)] = \
             datetime.now(timezone.utc).isoformat(timespec="seconds")
         fm["Notion URL"] = notion_url
 
@@ -85,7 +81,7 @@ class ObsidianWriter:
         target.parent.mkdir(parents=True, exist_ok=True)
         fm = {
             "notion_url": page["url"],
-            "last_synced": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "last_synced": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             **({"tags": page["tags"]} if page.get("tags") else {}),
         }
         text = frontmatter.dumps(frontmatter.Post(page["content"], **fm))

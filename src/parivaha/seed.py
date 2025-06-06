@@ -10,6 +10,7 @@ import json, os, time
 from pathlib import Path
 import click
 from dotenv import load_dotenv
+from parivaha.progress import progress
 
 try:
     from tqdm import tqdm
@@ -62,7 +63,7 @@ def run(payload_path: Path | None = None) -> None:
     def resolve_or_create(node: dict) -> str:
         title = node["name"]
     
-        # 1️⃣  if JSON carries an id, try to fetch it
+        # if JSON carries an id, try to fetch it
         page = None
         pid  = node.get("id")
         if pid:
@@ -74,7 +75,7 @@ def run(payload_path: Path | None = None) -> None:
             except Exception:
                 page = None
     
-        # 2️⃣  else look up by Name
+        # else look up by Name
         if page is None:
             found = nm.get_pages(
                 filter={
@@ -84,12 +85,12 @@ def run(payload_path: Path | None = None) -> None:
             )
             page = found[0] if found else None
     
-        # 3️⃣  still nothing? create fresh root-level page
+        # still nothing? create fresh root-level page
         if page is None:
             payload = build_payload(title, node.get("tags"))
             page    = nm.add_page(payload)
     
-        # 4️⃣  ensure it’s detached from any parent relation
+        # ensure it’s detached from any parent relation
         if (
             page.get("properties", {})
                .get("Parent item", {})

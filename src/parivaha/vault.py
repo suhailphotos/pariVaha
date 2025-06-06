@@ -2,6 +2,7 @@
 """Dataclass representing a single vault from sync_config.json"""
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -28,9 +29,18 @@ class Vault:
             raise NotImplementedError("Only Notion backend implemented")
 
         notion_cfg  = db["notion"]
+
+        # ── clone the forward map and drop empty-date fields ─────────────
+        fwd_map = deepcopy(notion_cfg["forward_mapping"])
+        # any mapping with type=="date" can trigger the bug if the page
+        # hasn't been filled in; we only have "Last Synced".
+        bad_keys = [k for k,v in fwd_map.items() if v.get("type") == "date"]
+        for k in bad_keys:
+            fwd_map.pop(k, None)
+
         notion_conf = NotionDBConfig(
-            database_id    = notion_cfg["id"],
-            forward_mapping = notion_cfg["forward_mapping"],
+            database_id     = notion_cfg["id"],
+            forward_mapping = fwd_map,                 # ← use the safe map
             back_mapping    = notion_cfg["back_mapping"],
             default_icon    = notion_cfg.get("icon", {}),
         )

@@ -6,13 +6,17 @@ from typing import Any, Dict, Optional, List
 
 import time
 import click
-from datetime import date
+from datetime import date, datetime, timezone
+from pathlib import Path
 try:
     from tqdm import tqdm  # nicer progress bar
 except ModuleNotFoundError:  # graceful fallback
     tqdm = None  # type: ignore
 
 from parivaha.vault import Vault
+from parivaha.progress import progress
+from notionmanager.backends import NotionSyncBackend
+from parivaha.utils import notion_prop
 from parivaha.obsidian_io import ObsidianReader, ObsidianWriter, MdDoc
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
@@ -29,7 +33,7 @@ class SyncService:
             if vault_name and v.name != vault_name:
                 continue
 
-            click.echo(f"📁  Vault: {v.name} → {direction}")
+            click.echo(f"Vault: {v.name} → {direction}")
             start = time.perf_counter()
 
             reader  = ObsidianReader(v.path)
@@ -48,12 +52,109 @@ class SyncService:
     # ────────────────────────────────────────────────────────────────────
     # Internal helpers
     # ────────────────────────────────────────────────────────────────────
-    def _pull(self, backend, writer):
-        remote = backend.fetch_existing_entries()
-        for page in remote.values():
-            writer.write_remote_page(page)
+    def _pull(self, backend: NotionSyncBackend, writer: ObsidianWriter):
+        """
+        Pull every page from the target Notion DB and mirror it to the vault.
+        After the file is written we *patch* “Obsidian Path” and “Last Synced”
+        back into Notion.  **No page is ever created here** – we use
+        `update_page()` exclusively.  Re-running is idempotent.
+        """
+        # 1) download the full record-set once
+        raw_pages = backend.notion_manager.get_pages(retrieve_all=True)
+        if not raw_pages:
+            click.echo("Nothing to pull – remote DB is empty.")
+            return
+
+        # 2) map page-id → list(children) and find roots
+        children: dict[str, list[dict]] = {}
+        roots: list[dict] = []
+        for pg in raw_pages:
+            rel = (
+                pg.get("properties", {})
+                  .get("Parent item", {})
+                  .get("relation", [])
+            )
+            if rel:
+                parent_id = rel[0]["id"]
+                children.setdefault(parent_id, []).append(pg)
+            else:
+                roots.append(pg)
+
+        # sort the trunk alphabetically (nice chain order)
+        def _title(p: dict) -> str:
+            return p["properties"]["Name"]["title"][0]["plain_text"]
+        roots.sort(key=lambda p: _title(p).lower())
+
+        nm = backend.notion_manager
+
+        def write_tree(node: dict, parent_dir: Path | None):
+            """recursively mirror node → markdown, then descend."""
+            title = _title(node)
+            rel_dir = (parent_dir / title) if parent_dir else Path(title)
+            md_path = rel_dir / f"{title}.md"
+            obs_path = md_path.as_posix()
+
+            # --- markdown body ------------------------------------------------
+            body = f"# {title}\n"
+            if parent_dir:
+                parent_name = parent_dir.name
+                body += f"*Parent*: [[{parent_name}/{parent_name}]]\n"
+
+            writer.write_remote_page(
+                {
+                    "path":    obs_path,
+                    "url":     f"https://www.notion.so/{node['id'].replace('-','')}",
+                    "tags":    [],              # tags are handled on push
+                    "content": body,
+                }
+            )
+
+            # --- patch Notion -------------------------------------------------
+            path_prop  = notion_prop("path",        writer.back_map)
+            sync_prop  = notion_prop("last_synced", writer.back_map)
+
+            nm.update_page(
+                node["id"],
+                {
+                  path_prop: {
+                    "type": "rich_text",
+                    "rich_text": [
+                      {
+                        "type": "text",
+                        "text": {"content": obs_path},
+                        # honour `"code": true` flag if present
+                        "annotations": (
+                          {"code": True}
+                          if writer.back_map["path"].get("code")
+                          else {}
+                        ),
+                      }
+                    ],
+                  },
+                  sync_prop: {
+                    "type": "date",
+                    "date": {"start": datetime.now(timezone.utc)
+                                       .date().isoformat()},
+                  },
+                },
+            )
+            # recurse
+            for child in children.get(node["id"], []):
+                write_tree(child, rel_dir)
+
+        # walk each root (trunk).  If you later want previous/next links
+        # you can add them after this loop once files exist.
+        for r in roots:
+            write_tree(r, None)
+
 
     def _push(self, reader: ObsidianReader, backend, writer: ObsidianWriter):
+        for folder in reader.root.iterdir():
+            if folder.is_dir():
+                hub_md = folder / f"{folder.name}.md"
+                if not hub_md.exists():
+                    hub_md.write_text(f"# {folder.name}\n", encoding="utf-8")
+
         docs = reader.scan()
         # ignore any markdown stored at the vault root
         docs = {p: d for p, d in docs.items() if d.path.parent != reader.root}
@@ -65,60 +166,43 @@ class SyncService:
 
         click.echo(f"{len(ordered)} markdown files discovered (root-level files skipped)")
 
-        iterator = ordered
-        bar_ctx = None
-        if tqdm:
-            iterator = tqdm(
-                ordered,
-                desc="Pushing pages",
-                unit="pg",
-                leave=False,
-                colour="green",
-                bar_format=BAR_FORMAT                  # ← correct kwarg
-            )
-        else:
-            bar_ctx = click.progressbar(length=len(ordered), label="Pushing pages")
-            bar_ctx.__enter__()
-
         path_to_page: Dict[str, str] = {}
+        # ─── unified progress bar (tqdm or click) ────────────────────────
+        with progress(len(ordered), "Pushing pages") as bar:
+            for doc in ordered:
+                # advance bar every iteration (object is either tqdm or click)
+                bar.update(1)
 
-        for idx, doc in enumerate(iterator, 1):
-            if not tqdm and bar_ctx:
-                bar_ctx.update(1)
+                # already synced? just cache the mapping and continue
+                if doc.notion_id:
+                    path_to_page[str(doc.path)] = doc.notion_id
+                    continue
 
-            if doc.notion_id:  # already synced – skip for prototype
-                path_to_page[str(doc.path)] = doc.notion_id
-                continue
+                parent_page_id = self._find_parent_page_id(doc, path_to_page)
 
-            parent_page_id = self._find_parent_page_id(doc, path_to_page)
-
-            flat = {
-                "name": doc.title,
-                "path": str(doc.path.relative_to(reader.root)),
-                "tags": doc.front.get("tags", ["#branch"]),
-                "status": "Not Synced",
-                "last_synced": date.today().isoformat(),     # mapping turns into “Last Synced”
-                "icon": backend.notion_db_config.default_icon,
-                "cover": getattr(backend.notion_db_config, "default_cover", {}),
-            }
-            payload = backend.notion_manager.build_notion_payload(
-                flat, backend.notion_db_config.back_mapping
-            )
-
-            if parent_page_id:
-                payload.setdefault("properties", {})["Parent item"] = {
-                    "type": "relation",
-                    "relation": [{"id": parent_page_id}],
+                flat = {
+                    "name": doc.title,
+                    "path": str(doc.path.relative_to(reader.root)),
+                    "tags": doc.front.get("tags"),
+                    "status": doc.front.get("status"),
+                    "icon": backend.notion_db_config.default_icon,
+                    "cover": getattr(backend.notion_db_config, "default_cover", {}),
                 }
+                payload = backend.notion_manager.build_notion_payload(
+                    flat, backend.notion_db_config.back_mapping
+                )
 
-            created = backend.notion_manager.add_page(payload)
-            writer.update_doc(doc, notion_url=created.get("url"))
-            path_to_page[str(doc.path)] = created["id"]
+                if parent_page_id:
+                    payload.setdefault("properties", {})["Parent item"] = {
+                        "type": "relation",
+                        "relation": [{"id": parent_page_id}],
+                    }
 
-        if tqdm:
-            iterator.close()  # type: ignore[attr-defined]
-        elif bar_ctx:
-            bar_ctx.__exit__(None, None, None)
+                created = backend.notion_manager.add_page(payload)
+                writer.update_doc(doc, notion_url=created.get("url"))
+                path_to_page[str(doc.path)] = created["id"]
+
+        # context manager closes / refreshes the bar automatically – no manual cleanup
 
     @staticmethod
     def _find_parent_page_id(doc: MdDoc, cache: Dict[str, str]) -> Optional[str]:
