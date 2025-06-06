@@ -22,6 +22,18 @@ import frontmatter
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
 
+def mark_sync_complete(notion_manager, page_id, back_map):
+    """
+    Mark the given Notion page as 'Sync Complete' using the flexible back_mapping.
+    """
+    status_prop = notion_prop("status", back_map)
+    notion_manager.update_page(page_id, {
+        status_prop: {
+            "type": "status",
+            "status": {"name": "Sync Complete"}
+        }
+    })
+
 class SyncService:
     def __init__(self, cfg: Dict[str, Any]):
         self.vaults = [Vault.from_cfg(v) for v in cfg.get("vaults", [])]
@@ -127,6 +139,7 @@ class SyncService:
                     },
                     sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
                 })
+                mark_sync_complete(nm, node["id"], writer.back_map)
 
                 if parent_dir is None:
                     trunk_md.append(writer.root / md_path)
@@ -242,8 +255,11 @@ class SyncService:
                     notion_id=created["id"],
                 )
                 path_to_page[str(doc.path)] = created["id"]
+                mark_sync_complete(backend.notion_manager, created["id"], writer.back_map)
 
         # context manager closes / refreshes the bar automatically – no manual cleanup
+
+
 
     @staticmethod
     def _find_parent_page_id(doc: MdDoc, cache: Dict[str, str]) -> Optional[str]:
