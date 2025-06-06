@@ -18,6 +18,7 @@ from parivaha.progress import progress
 from notionmanager.backends import NotionSyncBackend
 from parivaha.utils import notion_prop
 from parivaha.obsidian_io import ObsidianReader, ObsidianWriter, MdDoc
+import frontmatter
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
 
@@ -80,72 +81,94 @@ class SyncService:
             else:
                 roots.append(pg)
 
-        # sort the trunk alphabetically (nice chain order)
-        def _title(p: dict) -> str:
+        # ─── helpers ---------------------------------------------------
+        def _title(p: dict) -> str:                         # Notion page → str
             return p["properties"]["Name"]["title"][0]["plain_text"]
-        roots.sort(key=lambda p: _title(p).lower())
+
+        # sort root pages purely by Notion's Created timestamp (oldest first)
+        roots.sort(key=lambda p: p["created_time"])
 
         nm = backend.notion_manager
 
-        def write_tree(node: dict, parent_dir: Path | None):
-            """recursively mirror node → markdown, then descend."""
-            title = _title(node)
-            rel_dir = (parent_dir / title) if parent_dir else Path(title)
-            md_path = rel_dir / f"{title}.md"
-            obs_path = md_path.as_posix()
+        trunk_md: list[Path] = []  # collect root hub notes for stitching
 
-            # --- markdown body ------------------------------------------------
-            body = f"# {title}\n"
-            if parent_dir:
-                parent_name = parent_dir.name
-                body += f"*Parent*: [[{parent_name}/{parent_name}]]\n"
+        # ─── recursive writer with progress in closure ─────────────────
+        def make_writer(bar):
+            def _write(node: dict, parent_dir: Path | None):
+                bar.update(1)  # count *every* page
 
-            writer.write_remote_page(
-                {
-                    "path":    obs_path,
-                    "url":     f"https://www.notion.so/{node['id'].replace('-','')}",
-                    "tags":    [],              # tags are handled on push
+                title   = _title(node)
+                rel_dir = (parent_dir / title) if parent_dir else Path(title)
+                md_path  = rel_dir / f"{title}.md"
+                obs_path = md_path.as_posix()
+
+                body = f"# {title}\n"
+                if parent_dir:
+                    body += f"*Parent*: [[{parent_dir.name}/{parent_dir.name}]]\n"
+
+                writer.write_remote_page({
+                    "path": obs_path,
+                    "url":  f"https://www.notion.so/{node['id'].replace('-','')}",
+                    "tags": [],
                     "content": body,
-                }
+                })
+
+                path_prop = notion_prop("path", writer.back_map)
+                sync_prop = notion_prop("last_synced", writer.back_map)
+                nm.update_page(node["id"], {
+                    path_prop: {
+                        "type": "rich_text",
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {"content": obs_path},
+                            "annotations": ({"code": True}
+                                if writer.back_map["path"].get("code") else {}),
+                        }],
+                    },
+                    sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
+                })
+
+                if parent_dir is None:
+                    trunk_md.append(writer.root / md_path)
+
+                for child in children.get(node["id"], []):
+                    _write(child, rel_dir)
+
+            return _write
+
+        with progress(len(raw_pages), "Pulling pages") as bar:
+            writer_fn = make_writer(bar)
+            for r in roots:
+                writer_fn(r, None)
+
+        # ─── build map: root-title → list of its immediate children ----
+        id_to_children: Dict[str, List[str]] = {}
+        for root in roots:
+            id_to_children[_title(root)] = sorted(
+                [_title(c) for c in children.get(root["id"], [])],
+                key=lambda s: s.lower(),
             )
 
-            # --- patch Notion -------------------------------------------------
-            path_prop  = notion_prop("path",        writer.back_map)
-            sync_prop  = notion_prop("last_synced", writer.back_map)
+        # ─── stitch the trunk into prev / next chain + branch bullets --
+        for i, hub in enumerate(trunk_md):
+            post = frontmatter.load(hub)
+            title_line = post.content.splitlines()[0]
 
-            nm.update_page(
-                node["id"],
-                {
-                  path_prop: {
-                    "type": "rich_text",
-                    "rich_text": [
-                      {
-                        "type": "text",
-                        "text": {"content": obs_path},
-                        # honour `"code": true` flag if present
-                        "annotations": (
-                          {"code": True}
-                          if writer.back_map["path"].get("code")
-                          else {}
-                        ),
-                      }
-                    ],
-                  },
-                  sync_prop: {
-                    "type": "date",
-                    "date": {"start": datetime.now(timezone.utc)
-                                       .date().isoformat()},
-                  },
-                },
-            )
-            # recurse
-            for child in children.get(node["id"], []):
-                write_tree(child, rel_dir)
 
-        # walk each root (trunk).  If you later want previous/next links
-        # you can add them after this loop once files exist.
-        for r in roots:
-            write_tree(r, None)
+            links: list[str] = []
+            if i > 0:
+                prev = trunk_md[i-1].parent.name
+                links.append(f"- [[{prev}/{prev}]]")
+            if i < len(trunk_md) - 1:
+                nxt  = trunk_md[i+1].parent.name
+                links.append(f"- [[{nxt}/{nxt}]]")
+
+            # append real side-branch children (created-time order)
+            for child in id_to_children.get(hub.parent.name, []):
+                links.append(f"- [[{hub.parent.name}/{child}/{child}]]")
+
+            post.content = "\n".join([title_line, "", "## Children"] + links)
+            hub.write_text(frontmatter.dumps(post), encoding="utf-8")
 
 
     def _push(self, reader: ObsidianReader, backend, writer: ObsidianWriter):
