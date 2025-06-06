@@ -109,6 +109,7 @@ class SyncService:
                 writer.write_remote_page({
                     "path": obs_path,
                     "url":  f"https://www.notion.so/{node['id'].replace('-','')}",
+                    "id":   node["id"],
                     "tags": [],
                     "content": body,
                 })
@@ -121,8 +122,7 @@ class SyncService:
                         "rich_text": [{
                             "type": "text",
                             "text": {"content": obs_path},
-                            "annotations": ({"code": True}
-                                if writer.back_map["path"].get("code") else {}),
+                            "annotations": {"code": True, "color": "purple"},
                         }],
                     },
                     sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
@@ -222,7 +222,25 @@ class SyncService:
                     }
 
                 created = backend.notion_manager.add_page(payload)
-                writer.update_doc(doc, notion_url=created.get("url"))
+
+                # colour-consistent Obsidian Path (purple) -----------------
+                path_prop = notion_prop("path", writer.back_map)
+                backend.notion_manager.update_page(created["id"], {
+                    path_prop: {
+                        "type": "rich_text",
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {"content": flat["path"]},
+                            "annotations": {"code": True, "color": "purple"},
+                        }],
+                    }
+                })
+
+                writer.update_doc(
+                    doc,
+                    notion_url=created["url"],
+                    notion_id=created["id"],
+                )
                 path_to_page[str(doc.path)] = created["id"]
 
         # context manager closes / refreshes the bar automatically – no manual cleanup

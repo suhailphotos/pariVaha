@@ -33,13 +33,18 @@ class MdDoc:
         first = self.content.splitlines()[0]
         return first.lstrip("# ").strip()
 
+IGNORE_DIRS  = {".git", ".scripts", ".obsidian"}
+IGNORE_FILES = {"README.md"}
+
 class ObsidianReader:
     def __init__(self, root: Path):
         self.root = root
 
     def scan(self) -> Dict[str, MdDoc]:
         docs = {}
-        for md in (p for p in self.root.rglob("*.md") if ".obsidian" not in p.parts):
+        for md in self.root.rglob("*.md"):
+            if any(part in IGNORE_DIRS for part in md.parts) or md.name in IGNORE_FILES:
+                continue
             post = frontmatter.load(md)
             body_hash = hashlib.md5(post.content.encode()).hexdigest()
             docs[str(md)] = MdDoc(md, post.metadata, post.content, body_hash)
@@ -51,7 +56,7 @@ class ObsidianWriter:
         self.back_map = back_map                    # <- store once
 
     # ----------------------------------------------------------------
-    def update_doc(self, doc: MdDoc, *, notion_url: str):
+    def update_doc(self, doc: MdDoc, *, notion_url: str, notion_id: str):
         """
         Overwrite YAML front-matter → Last Synced, Notion URL
         and append a markdown link immediately after the H1.
@@ -60,7 +65,7 @@ class ObsidianWriter:
 
         fm[notion_prop("last_synced", self.back_map)] = \
             datetime.now(timezone.utc).isoformat(timespec="seconds")
-        fm["Notion URL"] = notion_url
+        fm["notion_id"] = notion_id        # use ID for sync, not URL
 
         # If the content does NOT already contain a notion link line,
         # inject one just after the first heading.
@@ -68,7 +73,8 @@ class ObsidianWriter:
         if "[Open in Notion]" not in body:
             lines = body.splitlines()
             if lines and lines[0].startswith("#"):
-                lines.insert(1, f"[Open in Notion]({notion_url})")
+                link_text = doc.title or "\"Open in Notion\""
+                lines.insert(1, f"[{link_text}]({notion_url})")
                 body = "\n".join(lines)
 
         post = frontmatter.Post(body, **fm)
@@ -76,13 +82,28 @@ class ObsidianWriter:
     # ----------------------------------------------------------------
 
     def write_remote_page(self, page: dict):
-        """Create / update local .md from a transformed Notion page."""
+        """
+        Create / update local .md from a Notion page *pulled* from the DB.
+        Adds a markdown link right after the H1 – consistent with update_doc().
+        """
         target = self.root / page["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
+
+        # ----- YAML ----------------------------------------------------
         fm = {
-            "notion_url": page["url"],
+            "notion_id":  page["id"],
             "last_synced": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             **({"tags": page["tags"]} if page.get("tags") else {}),
         }
-        text = frontmatter.dumps(frontmatter.Post(page["content"], **fm))
+
+        # ----- Body with link ------------------------------------------
+        body = page["content"]
+        if "[Open in Notion]" not in body:            # avoid duplicates
+            lines = body.splitlines()
+            if lines and lines[0].startswith("#"):
+                link_text = lines[0].lstrip("# ").strip() or "Open in Notion"
+                lines.insert(1, f"[{link_text}]({page['url']})")
+                body = "\n".join(lines)
+
+        text = frontmatter.dumps(frontmatter.Post(body, **fm))
         target.write_text(text, encoding="utf-8")
