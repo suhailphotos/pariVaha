@@ -133,17 +133,17 @@ class SyncService:
         def make_writer(bar):
 
             def _write(node: dict, parent_dir: Path | None):
-                bar.update(1)  # count *every* page
-
+                bar.update(1)
+            
                 title   = _title(node)
                 rel_dir = (parent_dir / title) if parent_dir else Path(title)
                 md_path  = rel_dir / f"{title}.md"
                 obs_path = md_path.as_posix()
-
+            
                 body = f"# {title}\n"
                 if parent_dir:
                     body += f"*Parent*: [[{parent_dir.name}/{parent_dir.name}]]\n"
-
+            
                 writer.write_remote_page({
                     "path": obs_path,
                     "url":  f"https://www.notion.so/{node['id'].replace('-','')}",
@@ -151,14 +151,14 @@ class SyncService:
                     "tags": [],
                     "content": body,
                 })
-
+            
                 canvas_prop = notion_prop("canvas", writer.back_map)
                 canvas_value = (
                     node.get("properties", {})
                         .get(canvas_prop, {})
                         .get("checkbox", False)
                 )
-
+            
                 path_prop = notion_prop("path", writer.back_map)
                 sync_prop = notion_prop("last_synced", writer.back_map)
                 nm.update_page(node["id"], {
@@ -172,16 +172,54 @@ class SyncService:
                     },
                     sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
                 })
-
+            
+                canvas_file = (writer.root / rel_dir / f"{title}.canvas")
+                md_file = writer.root / md_path
+                post = frontmatter.load(md_file)
+                lines = post.content.splitlines()
+            
+                canvas_link = f"- [[{rel_dir.as_posix()}/{title}.canvas]]"
+                has_canvas_link = any(canvas_link in line for line in lines)
+            
                 if canvas_value:
-                    canvas_file = (writer.root / rel_dir / f"{title}.canvas")
-                    write_canvas_file(canvas_file, title)
-
+                    # Only create a canvas file if it doesn't already exist
+                    if not canvas_file.exists():
+                        write_canvas_file(canvas_file, title)
+            
+                    # Add link if not present and .canvas file exists
+                    if canvas_file.exists():
+                        try:
+                            idx = lines.index("## Children")
+                            # Insert if not present under Children
+                            after_children = lines[idx+1:]
+                            if canvas_link not in after_children:
+                                lines.insert(idx + 1, canvas_link)
+                        except ValueError:
+                            # If no Children section, append new section/link
+                            lines.append("## Canvas")
+                            lines.append(canvas_link)
+                        post.content = "\n".join(lines)
+                        md_file.write_text(frontmatter.dumps(post), encoding="utf-8")
+                else:
+                    # Remove canvas link if present, but do NOT delete .canvas file
+                    # Remove both under Children or under Canvas section if present
+                    new_lines = []
+                    for i, line in enumerate(lines):
+                        # Remove any line that matches the canvas link
+                        if line.strip() == canvas_link:
+                            continue
+                        # Also, skip empty Canvas sections left behind
+                        if line.strip() == "## Canvas" and i+1 < len(lines) and lines[i+1].strip() == canvas_link:
+                            continue
+                        new_lines.append(line)
+                    post.content = "\n".join(new_lines)
+                    md_file.write_text(frontmatter.dumps(post), encoding="utf-8")
+            
                 mark_sync_complete(nm, node["id"], writer.back_map)
-
+            
                 if parent_dir is None:
                     trunk_md.append(writer.root / md_path)
-
+            
                 for child in children.get(node["id"], []):
                     _write(child, rel_dir)
 
