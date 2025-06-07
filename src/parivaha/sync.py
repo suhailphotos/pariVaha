@@ -6,6 +6,9 @@ from typing import Any, Dict, Optional, List
 
 import time
 import click
+import frontmatter
+import secrets
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 try:
@@ -18,7 +21,6 @@ from parivaha.progress import progress
 from notionmanager.backends import NotionSyncBackend
 from parivaha.utils import notion_prop
 from parivaha.obsidian_io import ObsidianReader, ObsidianWriter, MdDoc
-import frontmatter
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
 
@@ -33,6 +35,29 @@ def mark_sync_complete(notion_manager, page_id, back_map):
             "status": {"name": "Sync Complete"}
         }
     })
+
+def generate_canvas_id():
+    """Generate a random 16-char hex string for canvas node IDs."""
+    return secrets.token_hex(8)
+
+def write_canvas_file(canvas_path: Path, title: str):
+    canvas_path.parent.mkdir(parents=True, exist_ok=True)
+    node_id = generate_canvas_id()
+    content = {
+        "nodes": [
+            {
+                "id": node_id,
+                "x": -125,
+                "y": -30,
+                "width": 250,
+                "height": 60,
+                "type": "text",
+                "text": title
+            }
+        ],
+        "edges": []
+    }
+    canvas_path.write_text(json.dumps(content, indent=1), encoding="utf-8")
 
 class SyncService:
     def __init__(self, cfg: Dict[str, Any]):
@@ -106,6 +131,7 @@ class SyncService:
 
         # ─── recursive writer with progress in closure ─────────────────
         def make_writer(bar):
+
             def _write(node: dict, parent_dir: Path | None):
                 bar.update(1)  # count *every* page
 
@@ -126,6 +152,13 @@ class SyncService:
                     "content": body,
                 })
 
+                canvas_prop = notion_prop("canvas", writer.back_map)
+                canvas_value = (
+                    node.get("properties", {})
+                        .get(canvas_prop, {})
+                        .get("checkbox", False)
+                )
+
                 path_prop = notion_prop("path", writer.back_map)
                 sync_prop = notion_prop("last_synced", writer.back_map)
                 nm.update_page(node["id"], {
@@ -139,6 +172,11 @@ class SyncService:
                     },
                     sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
                 })
+
+                if canvas_value:
+                    canvas_file = (writer.root / rel_dir / f"{title}.canvas")
+                    write_canvas_file(canvas_file, title)
+
                 mark_sync_complete(nm, node["id"], writer.back_map)
 
                 if parent_dir is None:
@@ -166,20 +204,26 @@ class SyncService:
         for i, hub in enumerate(trunk_md):
             post = frontmatter.load(hub)
             title_line = post.content.splitlines()[0]
-
-
+        
             links: list[str] = []
+            # previous/next links...
             if i > 0:
                 prev = trunk_md[i-1].parent.name
                 links.append(f"- [[{prev}/{prev}]]")
             if i < len(trunk_md) - 1:
                 nxt  = trunk_md[i+1].parent.name
                 links.append(f"- [[{nxt}/{nxt}]]")
-
-            # append real side-branch children (created-time order)
+        
+            # children
             for child in id_to_children.get(hub.parent.name, []):
                 links.append(f"- [[{hub.parent.name}/{child}/{child}]]")
-
+        
+            # ADD: Canvas link if a canvas file exists
+            canvas_path = hub.with_suffix('.canvas')
+            if canvas_path.exists():
+                # this ensures the link matches actual location
+                links.append(f"- [[{hub.parent.name}/{hub.stem}.canvas]]")
+        
             post.content = "\n".join([title_line, "", "## Children"] + links)
             hub.write_text(frontmatter.dumps(post), encoding="utf-8")
 
