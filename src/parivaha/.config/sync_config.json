@@ -14,9 +14,10 @@
             "icon":          { "target": "icon",        "return": "object" },
             "cover":         { "target": "cover",       "return": "object" },
             "Name":          { "target": "name",        "type": "title",     "return": "str" },
-            "Obsidian Path": { "target": "path",        "type": "rich_text", "return": "str" },
+            "Obsidian Path": { "target": "path",        "type": "rich_text", "return": "str", "sync_key": true },
             "Tags":          { "target": "tags",        "type": "multi_select", "return": "list" },
             "Status":        { "target": "status",      "type": "status",     "return": "str" },
+            "Canvas":        { "target": "canvas",          "type": "checkbox", "return": "boolean"},  
             "Last Synced":   { "target": "last_synced", "type": "date",       "return": "str" }
           },
           "back_mapping": {
@@ -26,6 +27,7 @@
             "path":        { "target": "Obsidian Path",  "type": "rich_text", "return": "str", "code": true },
             "tags":        { "target": "Tags",           "type": "multi_select", "return": "list", "default": ["#branch"] },
             "status":      { "target": "Status",         "type": "status", "return": "str", "default": "Not Synced" },
+            "canvas":      { "target": "Canvas",         "type": "checkbox", "return": "boolean"},
             "last_synced": { "target": "Last Synced",    "type": "date",   "return": "str", "default": "//Sync computed at run time in YYYY-MM-DD" }
           },
           "icon": {
