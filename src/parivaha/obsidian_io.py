@@ -13,6 +13,7 @@ import frontmatter
 _NOTION_URL_PATTERN = re.compile(r"https://www\.notion\.so/[\w-]+-(?P<id>[0-9a-f]{32})")
 
 from parivaha.utils import notion_prop
+from parivaha.config import SYNC_LOG_FOLDER
 
 @dataclass
 class MdDoc:
@@ -33,7 +34,7 @@ class MdDoc:
         first = self.content.splitlines()[0]
         return first.lstrip("# ").strip()
 
-IGNORE_DIRS  = {".git", ".scripts", ".obsidian"}
+IGNORE_DIRS  = {".git", ".scripts", ".obsidian", SYNC_LOG_FOLDER}
 IGNORE_FILES = {"README.md"}
 
 class ObsidianReader:

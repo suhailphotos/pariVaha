@@ -1,14 +1,14 @@
 # ─────────────────────────── src/parivaha/cli.py ────────────────────────────
 """CLI entry‑point – *thin* wrapper delegating to internal services."""
 from __future__ import annotations
-
+import os
 import click
 import json
 from pathlib import Path
 from dotenv import load_dotenv
 from parivaha import seed
 
-from parivaha.config import CONFIG_DIR, ENV_FILE, SYNC_FILE, load_sync_config
+from parivaha.config import CONFIG_DIR, ENV_FILE, SYNC_FILE, load_sync_config, get_sync_log_path
 from parivaha.sync import SyncService
 
 @click.group()
@@ -19,13 +19,39 @@ def main() -> None:
 # ---------------------------------------------------------------------------
 # parivaha init – copy templates on first run
 # ---------------------------------------------------------------------------
+# src/parivaha/cli.py
+
+
 @main.command("init")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing files if present.")
 def init_cmd(overwrite: bool) -> None:
-    from parivaha.config import bootstrap_user_config
+    from parivaha.config import bootstrap_user_config, load_sync_config
 
     bootstrap_user_config(overwrite)
-    click.echo("✅ Configuration initialised at ~/.parivaha")
+    click.echo("Configuration initialised at ~/.parivaha")
+
+    # Create .sync/sync_log.json for each vault
+    cfg = load_sync_config()
+    for v in cfg.get("vaults", []):
+        vault_path = Path(os.path.expandvars(v["path"])).expanduser()
+        sync_dir = vault_path / ".sync"
+        sync_dir.mkdir(exist_ok=True)
+
+        # Copy details for log file
+        log = {
+            "name": v["name"],
+            "path": str(vault_path),
+            "db_type": v["database"]["type"],
+            "db_id": v["database"][v["database"]["type"]]["id"],
+            "last_pull": None,
+            "last_push": None,
+            "pages": {}
+        }
+        log_path = get_sync_log_path(vault_path)
+        if log_path.exists() and not overwrite:
+            continue
+        log_path.write_text(json.dumps(log, indent=2), encoding="utf-8")
+        click.echo(f"Created sync log: {log_path}")
 
 @main.command("seed")
 @click.option(
