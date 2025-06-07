@@ -1,0 +1,28 @@
+{
+  "vaults":[
+    {
+      "name": "jnanaKosha",
+      "path": "$DROPBOX/matrix/obsidian/jnanaKosha",
+      "db_type": "notion",
+      "db_id": "208a1865-b187-8104-bf37-e35bc4fa40d9",
+      "last_pull": "2025-06-06T22:12:00.000Z",
+      "last_push": "2025-05-06T22:12:10.000Z",
+      "pages": {
+        "20aa1865-b187-815b-915f-d009a6f73106": {
+          "notion":{
+            "id": "20aa1865-b187-815b-915f-d009a6f73106",
+            "last_edited": "2025-06-07T18:29:06Z",
+            "synced_at": "2025-06-06T22:15:00.000Z",
+            "parent_id": "20aa1865-b187-8158-9cd7-f58d5fb74c76"
+          },
+          "obsidian": {
+            "path": "math/math.md",
+            "hash": "3c4e20e2c8b2...",
+            "local_mtime": "2025-06-06T22:15:01.000Z"
+          },
+          "status": "active"
+        }
+      }
+    }
+  ]
+}
