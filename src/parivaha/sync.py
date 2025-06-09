@@ -8,8 +8,9 @@ import time
 import click
 import frontmatter
 import secrets
+import hashlib
 import json
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 try:
     from tqdm import tqdm  # nicer progress bar
@@ -21,6 +22,7 @@ from parivaha.progress import progress
 from notionmanager.backends import NotionSyncBackend
 from parivaha.utils import notion_prop
 from parivaha.obsidian_io import ObsidianReader, ObsidianWriter, MdDoc
+from parivaha.config import get_sync_log_path
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
 
@@ -92,76 +94,133 @@ class SyncService:
     # ────────────────────────────────────────────────────────────────────
     def _pull(self, backend: NotionSyncBackend, writer: ObsidianWriter):
         """
-        Pull every page from the target Notion DB and mirror it to the vault.
-        After the file is written we *patch* “Obsidian Path” and “Last Synced”
-        back into Notion.  **No page is ever created here** – we use
-        `update_page()` exclusively.  Re-running is idempotent.
+        Hybrid incremental/full pull: always reconstructs trees from roots,
+        but on incremental, only rewrites affected subtrees for efficiency.
         """
-        # 1) download the full record-set once
-        raw_pages = backend.notion_manager.get_pages(retrieve_all=True)
-        if not raw_pages:
+        sync_log_path = get_sync_log_path(writer.root)
+        sync_log_path.parent.mkdir(parents=True, exist_ok=True)
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    
+        # Load sync log if exists, else start fresh
+        if sync_log_path.exists():
+            sync_log = json.loads(sync_log_path.read_text())
+            last_pull = sync_log.get("last_pull")
+            pages_log = sync_log.get("pages", {})
+        else:
+            sync_log = {}
+            last_pull = None
+            pages_log = {}
+    
+        log_diff = {"created": [], "updated": [], "deleted": []}
+        nm = backend.notion_manager
+    
+        # Always get all pages for correct tree relationships
+        all_pages = nm.get_pages(retrieve_all=True)
+        if not all_pages:
             click.echo("Nothing to pull – remote DB is empty.")
             return
-
-        # 2) map page-id → list(children) and find roots
+    
+        # Build parent-child and id-to-page mapping
         children: dict[str, list[dict]] = {}
-        roots: list[dict] = []
-        for pg in raw_pages:
-            rel = (
-                pg.get("properties", {})
-                  .get("Parent item", {})
-                  .get("relation", [])
-            )
+        id_to_page: dict[str, dict] = {}
+        for pg in all_pages:
+            id_to_page[pg["id"]] = pg
+            rel = pg.get("properties", {}).get("Parent item", {}).get("relation", [])
             if rel:
                 parent_id = rel[0]["id"]
                 children.setdefault(parent_id, []).append(pg)
-            else:
-                roots.append(pg)
-
-        # ─── helpers ---------------------------------------------------
-        def _title(p: dict) -> str:                         # Notion page → str
-            return p["properties"]["Name"]["title"][0]["plain_text"]
-
-        # sort root pages purely by Notion's Created timestamp (oldest first)
+    
+        # Find roots
+        roots = [pg for pg in all_pages if not pg.get("properties", {}).get("Parent item", {}).get("relation")]
         roots.sort(key=lambda p: p["created_time"])
+    
+        # Figure out which roots/subtrees to write
+        affected_roots = set()
+    
+        if last_pull:
+           filter_payload = {
+               "filter": {
+                   "timestamp": "last_edited_time",
+                   "last_edited_time": {"after": last_pull}
+               }
+           }
+           changed = nm.get_pages(**filter_payload)
+           if not changed:
+               click.echo("No changes detected since last pull.")
+               return  # Nothing to do
+           affected_roots = set()
+           for pg in changed:
+               cur = pg
+               while True:
+                   rel = cur.get("properties", {}).get("Parent item", {}).get("relation", [])
+                   if rel:
+                       parent_id = rel[0]["id"]
+                       parent = id_to_page.get(parent_id)
+                       if parent:
+                           cur = parent
+                           continue
+                   break
+               affected_roots.add(cur["id"])
+        else:
+            # Full pull: all roots
+            affected_roots = set(root["id"] for root in roots)
+        
+        if not affected_roots:
+            click.echo("No affected subtrees to sync.")
+            return
 
-        nm = backend.notion_manager
-
-        trunk_md: list[Path] = []  # collect root hub notes for stitching
-
-        # ─── recursive writer with progress in closure ─────────────────
-        def make_writer(bar):
-
-            def _write(node: dict, parent_dir: Path | None):
-                bar.update(1)
-            
-                title   = _title(node)
-                rel_dir = (parent_dir / title) if parent_dir else Path(title)
-                md_path  = rel_dir / f"{title}.md"
-                obs_path = md_path.as_posix()
-            
+        # Helper: Get title
+        def _title(p: dict) -> str:
+            try:
+                return p["properties"]["Name"]["title"][0]["plain_text"]
+            except Exception:
+                return p.get("id", "<untitled>")
+    
+        trunk_md: list[Path] = []
+    
+        # Recursive write: always from the root, building correct path
+        def write_tree(node, parent_dir: Path | None):
+            title = _title(node)
+            rel_dir = (parent_dir / title) if parent_dir else Path(title)
+            md_path = rel_dir / f"{title}.md"
+            obs_path = md_path.as_posix()
+    
+            notion_id = node["id"]
+            notion_last_edit = node.get("last_edited_time", node.get("created_time"))
+            old_entry = pages_log.get(notion_id)
+            local_hash = None
+    
+            update_needed = (
+                not old_entry or
+                old_entry["notion"].get("last_edited") != notion_last_edit or
+                old_entry["obsidian"].get("path") != obs_path
+            )
+    
+            if update_needed:
                 body = f"# {title}\n"
                 if parent_dir:
                     body += f"*Parent*: [[{parent_dir.name}/{parent_dir.name}]]\n"
-            
                 writer.write_remote_page({
                     "path": obs_path,
-                    "url":  f"https://www.notion.so/{node['id'].replace('-','')}",
-                    "id":   node["id"],
+                    "url": f"https://www.notion.so/{notion_id.replace('-','')}",
+                    "id": notion_id,
                     "tags": [],
                     "content": body,
                 })
-            
+                log_diff["created" if not old_entry else "updated"].append(obs_path)
+                # Canvas and Notion properties (same as before)
                 canvas_prop = notion_prop("canvas", writer.back_map)
                 canvas_value = (
                     node.get("properties", {})
                         .get(canvas_prop, {})
                         .get("checkbox", False)
                 )
-            
+                canvas_file = writer.root / rel_dir / f"{title}.canvas"
+                if canvas_value and not canvas_file.exists():
+                    write_canvas_file(canvas_file, title)
                 path_prop = notion_prop("path", writer.back_map)
                 sync_prop = notion_prop("last_synced", writer.back_map)
-                nm.update_page(node["id"], {
+                backend.notion_manager.update_page(node["id"], {
                     path_prop: {
                         "type": "rich_text",
                         "rich_text": [{
@@ -172,98 +231,78 @@ class SyncService:
                     },
                     sync_prop: {"type": "date", "date": {"start": datetime.now(timezone.utc).date().isoformat()}},
                 })
-            
-                canvas_file = (writer.root / rel_dir / f"{title}.canvas")
+                mark_sync_complete(nm, notion_id, writer.back_map)
+                # refresh page meta to capture the NEW last_edited_time
+                notion_last_edit = nm.get_page(notion_id)["last_edited_time"]
+                # Compute hash
                 md_file = writer.root / md_path
                 post = frontmatter.load(md_file)
-                lines = post.content.splitlines()
-            
-                canvas_link = f"- [[{rel_dir.as_posix()}/{title}.canvas]]"
-                has_canvas_link = any(canvas_link in line for line in lines)
-            
-                if canvas_value:
-                    # Only create a canvas file if it doesn't already exist
-                    if not canvas_file.exists():
-                        write_canvas_file(canvas_file, title)
-            
-                    # Add link if not present and .canvas file exists
-                    if canvas_file.exists():
-                        try:
-                            idx = lines.index("## Children")
-                            # Insert if not present under Children
-                            after_children = lines[idx+1:]
-                            if canvas_link not in after_children:
-                                lines.insert(idx + 1, canvas_link)
-                        except ValueError:
-                            # If no Children section, append new section/link
-                            lines.append("## Canvas")
-                            lines.append(canvas_link)
-                        post.content = "\n".join(lines)
-                        md_file.write_text(frontmatter.dumps(post), encoding="utf-8")
-                else:
-                    # Remove canvas link if present, but do NOT delete .canvas file
-                    # Remove both under Children or under Canvas section if present
-                    new_lines = []
-                    for i, line in enumerate(lines):
-                        # Remove any line that matches the canvas link
-                        if line.strip() == canvas_link:
-                            continue
-                        # Also, skip empty Canvas sections left behind
-                        if line.strip() == "## Canvas" and i+1 < len(lines) and lines[i+1].strip() == canvas_link:
-                            continue
-                        new_lines.append(line)
-                    post.content = "\n".join(new_lines)
-                    md_file.write_text(frontmatter.dumps(post), encoding="utf-8")
-            
-                mark_sync_complete(nm, node["id"], writer.back_map)
-            
-                if parent_dir is None:
-                    trunk_md.append(writer.root / md_path)
-            
-                for child in children.get(node["id"], []):
-                    _write(child, rel_dir)
-
-            return _write
-
-        with progress(len(raw_pages), "Pulling pages") as bar:
-            writer_fn = make_writer(bar)
-            for r in roots:
-                writer_fn(r, None)
-
-        # ─── build map: root-title → list of its immediate children ----
+                local_hash = hashlib.md5(post.content.encode()).hexdigest()
+                pages_log[notion_id] = {
+                    "notion": {
+                        "id": notion_id,
+                        "last_edited": notion_last_edit,
+                        "synced_at": now,
+                        "parent_id": node.get("parent", {}).get("id"),
+                    },
+                    "obsidian": {
+                        "path": obs_path,
+                        "hash": local_hash,
+                    }
+                }
+            # Record as a trunk (root) note
+            if parent_dir is None:
+                trunk_md.append(writer.root / md_path)
+            # Recursively write children
+            for child in children.get(notion_id, []):
+                write_tree(child, rel_dir)
+    
+        # Progress bar: how many roots/subtrees to write
+        todo = [id_to_page[rid] for rid in affected_roots]
+        with progress(len(todo), "Syncing subtrees") as bar:
+            for root in todo:
+                write_tree(root, None)
+                bar.update(1)
+    
+        # Stitch trunk (prev/next/children) – unchanged
         id_to_children: Dict[str, List[str]] = {}
         for root in roots:
             id_to_children[_title(root)] = sorted(
                 [_title(c) for c in children.get(root["id"], [])],
                 key=lambda s: s.lower(),
             )
-
-        # ─── stitch the trunk into prev / next chain + branch bullets --
+    
         for i, hub in enumerate(trunk_md):
             post = frontmatter.load(hub)
             title_line = post.content.splitlines()[0]
-        
             links: list[str] = []
-            # previous/next links...
             if i > 0:
                 prev = trunk_md[i-1].parent.name
                 links.append(f"- [[{prev}/{prev}]]")
             if i < len(trunk_md) - 1:
                 nxt  = trunk_md[i+1].parent.name
                 links.append(f"- [[{nxt}/{nxt}]]")
-        
-            # children
             for child in id_to_children.get(hub.parent.name, []):
                 links.append(f"- [[{hub.parent.name}/{child}/{child}]]")
-        
-            # ADD: Canvas link if a canvas file exists
             canvas_path = hub.with_suffix('.canvas')
             if canvas_path.exists():
-                # this ensures the link matches actual location
                 links.append(f"- [[{hub.parent.name}/{hub.stem}.canvas]]")
-        
             post.content = "\n".join([title_line, "", "## Children"] + links)
             hub.write_text(frontmatter.dumps(post), encoding="utf-8")
+    
+        # record pull-completion time *after* all page updates
+        sync_log["last_pull"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        sync_log["pages"] = pages_log
+        sync_log_path.write_text(json.dumps(sync_log, indent=2))
+    
+        def print_diff():
+            print("\nSync summary:")
+            for k, v in log_diff.items():
+                if v:
+                    print(f"  {k.capitalize()}:")
+                    for item in v:
+                        print(f"    - {item}")
+        print_diff()
 
 
     def _push(self, reader: ObsidianReader, backend, writer: ObsidianWriter):
