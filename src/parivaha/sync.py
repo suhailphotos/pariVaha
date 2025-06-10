@@ -301,39 +301,7 @@ class SyncService:
         for pg in page_map.values():
             write_page(pg)
     
-        # 5. Rebuild root navigation (*Siblings:* chain) -----------------------
-        root_ids = [pid for pid, meta in pages_log.items()
-                    if meta.get("parent_id") is None]
-        root_ids_sorted = sorted(
-            root_ids,
-            key=lambda rid: title(page_map.get(rid) or nm.get_page(rid)).lower()
-        )
-        for i, rid in enumerate(root_ids_sorted):
-            md_rel = Path(pages_log[rid]["obsidian"]["path"])
-            md_abs = writer_root / md_rel
-            if not md_abs.exists():
-                continue
-            post = frontmatter.load(md_abs)
-            # ── robust clean-up ------------------------------------------------
-            # 1) Remove EVERY standalone bullet link to another root
-            post.content = re.sub(
-                r"^[ \t]*-\s+\[\[.*?\/.*?\]\]\s*\n?", "", post.content, flags=re.MULTILINE
-            )
-            # 2) Remove any prior *Siblings:* block entirely
-            post.content = re.sub(
-                r"\*Siblings:\*[\s\S]*?(?:\n{2,}|$)", "", post.content, flags=re.MULTILINE
-            )
-            # 3) Collapse >2 consecutive blank lines to just one
-            post.content = re.sub(r"\n{3,}", "\n\n", post.content)
-            # Add exactly ONE sibling (the “next” in chain) -------------------
-            if i < len(root_ids_sorted) - 1:
-                sib_id = root_ids_sorted[i + 1]
-                sib_title = title(page_map.get(sib_id) or nm.get_page(sib_id))
-                post.content = post.content.rstrip() + f"\n\n*Siblings:*\n- [[{sib_title}/{sib_title}]]\n"
-            # If last, do not add siblings (tail stays clean)
-            md_abs.write_text(frontmatter.dumps(post), encoding="utf-8")
-
-        # 6. Handle deletions (clean up files and log, leave .canvas intact) ---
+        # 5. Handle deletions (clean up files & log, leave .canvas intact) -----
         # run this scan only if we processed deltas **or** hygiene is due
         if delta_pages or hygiene_due:
             alive_ids = {
@@ -348,6 +316,39 @@ class SyncService:
                     pages_log.pop(pid, None)
                     log_diff["deleted"].append(meta["obsidian"]["path"])
 
+        # 6. Rebuild root navigation (*Siblings:* chain) -----------------------
+        def _write_sibling_block(root_ids_sorted: list[str]) -> None:
+            for i, rid in enumerate(root_ids_sorted):
+                md_rel = Path(pages_log[rid]["obsidian"]["path"])
+                md_abs = writer_root / md_rel
+                if not md_abs.exists():
+                    continue
+                post = frontmatter.load(md_abs)
+                # clean old bullets / block
+                post.content = re.sub(
+                    r"^[ \t]*-\s+\[\[.*?\/.*?\]\]\s*\n?", "",
+                    post.content, flags=re.MULTILINE
+                )
+                post.content = re.sub(
+                    r"\*Siblings:\*[\s\S]*?(?:\n{2,}|$)", "",
+                    post.content, flags=re.MULTILINE
+                )
+                post.content = re.sub(r"\n{3,}", "\n\n", post.content)
+                # write single sibling if not tail
+                if i < len(root_ids_sorted) - 1:
+                    sib_id = root_ids_sorted[i + 1]
+                    sib_title = title(page_map.get(sib_id) or nm.get_page(sib_id))
+                    post.content = post.content.rstrip() + \
+                        f"\n\n*Siblings:*\n- [[{sib_title}/{sib_title}]]\n"
+                md_abs.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+        root_ids = [pid for pid, meta in pages_log.items()
+                    if meta.get("parent_id") is None]
+        root_ids_sorted = sorted(
+            root_ids,
+            key=lambda rid: title(page_map.get(rid) or nm.get_page(rid)).lower()
+        )
+        _write_sibling_block(root_ids_sorted)
         # 7. Save log and summary  (timestamp AFTER all update_page() calls) ---
         if delta_pages:
             latest_edited = max(parse_date(pg["last_edited_time"]) for pg in delta_pages)
