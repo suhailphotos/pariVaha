@@ -30,6 +30,9 @@ from parivaha.config import get_sync_log_path
 
 BAR_FORMAT = "{l_bar}{bar}| {n_fmt}/{total_fmt} • {rate_fmt}{postfix}"
 
+# ────────────────────────────────────────────────────────────────────
+# helpers
+# ────────────────────────────────────────────────────────────────────
 def mark_sync_complete(notion_manager, page_id, back_map):
     """
     Mark the given Notion page as 'Sync Complete' using the flexible back_mapping.
@@ -64,6 +67,18 @@ def write_canvas_file(canvas_path: Path, title: str):
         "edges": []
     }
     canvas_path.write_text(json.dumps(content, indent=1), encoding="utf-8")
+
+def _purge_empty_dirs(start: Path) -> None:
+    """
+    Recursively remove empty directories up to—but **not** including—the vault root.
+    """
+    try:
+        while start != start.parent and not any(start.iterdir()):
+            start.rmdir()
+            start = start.parent
+    except OSError:
+        # Directory not empty or permission issues – just stop
+        pass
 
 class SyncService:
     def __init__(self, cfg: Dict[str, Any]):
@@ -116,8 +131,8 @@ class SyncService:
         else:
             sync_log, last_pull, pages_log = {}, None, {}
     
-        old_pages_log = dict(pages_log)
-        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # keep the previous last_pull in case no real delta is found
+        prev_last_pull = last_pull
     
         nm = backend.notion_manager
         back_map = backend.notion_db_config.back_mapping
@@ -135,9 +150,14 @@ class SyncService:
         else:
             delta_pages = nm.get_pages(retrieve_all=True)
     
-        if not delta_pages and last_pull:
+        hygiene_due = (
+            not last_pull or
+            parse_date(last_pull) < datetime.now(timezone.utc) - timedelta(hours=24)
+        )
+
+        if not delta_pages and last_pull and not hygiene_due:
             click.echo("No changes detected since last pull.")
-            return
+            return           # FAST-EXIT, we skip deletion scan & sibling rebuild
     
         # 2. Build lookup map for affected pages (parents pulled on-demand)
         def title(page) -> str:
@@ -234,24 +254,26 @@ class SyncService:
                 path_prop  = notion_prop("path",  back_map)
                 sync_prop  = notion_prop("last_synced", back_map)
                 tags_prop  = notion_prop("tags", back_map)
-                backend.notion_manager.update_page(pid, {
-                    path_prop: {
-                        "type": "rich_text",
-                        "rich_text": [{
-                            "type": "text",
-                            "text": {"content": md_path.as_posix()},
-                            "annotations": {"code": True, "color": "purple"},
-                        }],
-                    },
-                    sync_prop: {"type": "date",
-                                "date": {"start": datetime.now(timezone.utc)
-                                                     .date().isoformat()}},
-                    tags_prop: {
-                        "type": "multi_select",
-                        "multi_select": [{"name": "#root" if is_root else "#branch"}],
-                    },
-                })
-                mark_sync_complete(nm, pid, back_map)
+                # Only hit the API if path OR tag set changed
+                if old_path != md_path.as_posix() or is_root != (old_parent_id is None):
+                    backend.notion_manager.update_page(pid, {
+                        path_prop: {
+                            "type": "rich_text",
+                            "rich_text": [{
+                                "type": "text",
+                                "text": {"content": md_path.as_posix()},
+                                "annotations": {"code": True, "color": "purple"},
+                            }],
+                        },
+                        sync_prop: {"type": "date",
+                                    "date": {"start": datetime.now(timezone.utc)
+                                                         .date().isoformat()}},
+                        tags_prop: {
+                            "type": "multi_select",
+                            "multi_select": [{"name": "#root" if is_root else "#branch"}],
+                        },
+                    })
+                    mark_sync_complete(nm, pid, back_map)
                 # refresh metadata to capture the NEW last_edited_time  ← ★
                 pg = nm.get_page(pid)
 
@@ -312,16 +334,19 @@ class SyncService:
             md_abs.write_text(frontmatter.dumps(post), encoding="utf-8")
 
         # 6. Handle deletions (clean up files and log, leave .canvas intact) ---
-        alive_ids = {
-            p["id"] for p in nm.get_pages(retrieve_all=True) if not p.get("archived")
-        }
-        for pid, meta in list(pages_log.items()):
-            if pid not in alive_ids:
-                md_abs = writer_root / meta["obsidian"]["path"]
-                if md_abs.exists():
-                    md_abs.unlink()
-                pages_log.pop(pid, None)
-                log_diff["deleted"].append(meta["obsidian"]["path"])
+        # run this scan only if we processed deltas **or** hygiene is due
+        if delta_pages or hygiene_due:
+            alive_ids = {
+                p["id"] for p in nm.get_pages(retrieve_all=True) if not p.get("archived")
+            }
+            for pid, meta in list(pages_log.items()):
+                if pid not in alive_ids:
+                    md_abs = writer_root / meta["obsidian"]["path"]
+                    if md_abs.exists():
+                        md_abs.unlink()
+                        _purge_empty_dirs(md_abs.parent)
+                    pages_log.pop(pid, None)
+                    log_diff["deleted"].append(meta["obsidian"]["path"])
 
         # 7. Save log and summary  (timestamp AFTER all update_page() calls) ---
         if delta_pages:
@@ -330,8 +355,8 @@ class SyncService:
             new_last_pull = (latest_edited - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
             sync_log["last_pull"] = new_last_pull
         else:
-            # fallback: use now (this is not ideal, but keeps your log consistent
-            sync_log["last_pull"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            # no delta → keep previous last_pull (avoids micro “blind window”)
+            sync_log["last_pull"] = prev_last_pull or datetime.now(timezone.utc).isoformat(timespec="seconds")
         sync_log["pages"] = pages_log
         sync_log_path.write_text(json.dumps(sync_log, indent=2))
     
