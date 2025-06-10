@@ -222,9 +222,7 @@ class SyncService:
                     body.append(f"*Parent*: [[{parent_name}/{parent_name}]]")
 
                 body.append(f"[Open in Notion](https://www.notion.so/{pid.replace('-','')})")
-                body.append("")
-                body.append("---")
-                body.append("")
+                body.extend(["", "---", ""])
                 writer.write_remote_page({
                     "id": pid,
                     "url": f"https://www.notion.so/{pid.replace('-','')}",
@@ -305,12 +303,12 @@ class SyncService:
             )
             # 3) Collapse >2 consecutive blank lines to just one
             post.content = re.sub(r"\n{3,}", "\n\n", post.content)
-            # Add just one sibling: the next in order
+            # Add exactly ONE sibling (the “next” in chain) -------------------
             if i < len(root_ids_sorted) - 1:
                 sib_id = root_ids_sorted[i + 1]
                 sib_title = title(page_map.get(sib_id) or nm.get_page(sib_id))
                 post.content = post.content.rstrip() + f"\n\n*Siblings:*\n- [[{sib_title}/{sib_title}]]\n"
-            # If last, do not add siblings
+            # If last, do not add siblings (tail stays clean)
             md_abs.write_text(frontmatter.dumps(post), encoding="utf-8")
 
         # 6. Handle deletions (clean up files and log, leave .canvas intact) ---
