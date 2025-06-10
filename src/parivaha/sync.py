@@ -13,7 +13,8 @@ import hashlib
 import json
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from dateutil.parser import parse as parse_date
 from pathlib import Path
 try:
     from tqdm import tqdm  # nicer progress bar
@@ -182,7 +183,12 @@ class SyncService:
                 parent_id_tmp = rel[0]["id"]
                 cursor = page_map.get(parent_id_tmp) or nm.get_page(parent_id_tmp)
                 parts.insert(0, title(cursor))
-            rel_dir = Path(*parts[:-1])
+            # OLD behaviour: **every** page lives in a folder named after itself.
+            # So:
+            #   root        →  data/data.md
+            #   child       →  data/dataProcessing/dataProcessing.md
+            #   grandchild  →  ml/neuralNetworks/cnn/cnn.md
+            rel_dir = Path(*parts)                # parts already ends with title
             md_path = rel_dir / f"{title_str}.md"
             abs_md = writer_root / md_path
     
@@ -211,9 +217,10 @@ class SyncService:
                 is_root = (direct_parent_id is None)
                 body = []
                 if not is_root:
-                    # full relative path to the parent markdown
-                    parent_rel = rel_dir.as_posix()
-                    body.append(f"*Parent*: [[{parent_rel}/{rel_dir.name}]]")
+                    # link format identical to original code
+                    parent_name = rel_dir.parent.name
+                    body.append(f"*Parent*: [[{parent_name}/{parent_name}]]")
+
                 body.append(f"[Open in Notion](https://www.notion.so/{pid.replace('-','')})")
                 body.append("")
                 body.append("---")
@@ -247,11 +254,10 @@ class SyncService:
                     },
                 })
                 mark_sync_complete(nm, pid, back_map)
-                # ensure file is flushed before hashing
-                abs_md = writer_root / md_path
-                log_diff["created" if not old_meta else "updated"].append(md_path.as_posix())
-    
-            # Update log with latest parent_id, last_edited, and obsidian path/hash
+                # refresh metadata to capture the NEW last_edited_time  ← ★
+                pg = nm.get_page(pid)
+
+            # Update / record log entry (inside or outside need_write) ---------
             pages_log[pid] = {
                 "parent_id": direct_parent_id,
                 "last_edited": pg["last_edited_time"],
@@ -288,8 +294,17 @@ class SyncService:
             if not md_abs.exists():
                 continue
             post = frontmatter.load(md_abs)
-            # Remove old Siblings block
-            post.content = re.sub(r"\*Siblings:\*[\s\S]*?(\n\n|$)", "", post.content, flags=re.MULTILINE)
+            # ── robust clean-up ------------------------------------------------
+            # 1) Remove EVERY standalone bullet link to another root
+            post.content = re.sub(
+                r"^[ \t]*-\s+\[\[.*?\/.*?\]\]\s*\n?", "", post.content, flags=re.MULTILINE
+            )
+            # 2) Remove any prior *Siblings:* block entirely
+            post.content = re.sub(
+                r"\*Siblings:\*[\s\S]*?(?:\n{2,}|$)", "", post.content, flags=re.MULTILINE
+            )
+            # 3) Collapse >2 consecutive blank lines to just one
+            post.content = re.sub(r"\n{3,}", "\n\n", post.content)
             # Add just one sibling: the next in order
             if i < len(root_ids_sorted) - 1:
                 sib_id = root_ids_sorted[i + 1]
@@ -310,9 +325,16 @@ class SyncService:
                 pages_log.pop(pid, None)
                 log_diff["deleted"].append(meta["obsidian"]["path"])
 
-        # 7. Save log and summary ---------------------------------------------
+        # 7. Save log and summary  (timestamp AFTER all update_page() calls) ---
+        if delta_pages:
+            latest_edited = max(parse_date(pg["last_edited_time"]) for pg in delta_pages)
+            # subtract 1 second to ensure no overlap is lost
+            new_last_pull = (latest_edited - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+            sync_log["last_pull"] = new_last_pull
+        else:
+            # fallback: use now (this is not ideal, but keeps your log consistent
+            sync_log["last_pull"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
         sync_log["pages"] = pages_log
-        sync_log["last_pull"] = now_iso
         sync_log_path.write_text(json.dumps(sync_log, indent=2))
     
         click.echo("Sync summary:")
