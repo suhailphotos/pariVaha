@@ -259,7 +259,12 @@ class SyncService:
             # Detect move / rename -------------------------------------------
             old_meta = pages_log.get(pid)
             old_parent_id = old_meta["parent_id"] if old_meta else None
-            old_path = old_meta["obsidian"]["path"] if old_meta else None
+            skip_move = old_meta.get("_skip_move") if old_meta else False
+            old_path  = (
+                old_meta.get("_prev_path")
+                if old_meta and "_prev_path" in old_meta      # only this run
+                else (old_meta["obsidian"]["path"] if old_meta else None)
+            )
 
 
             if old_meta and (old_path != md_path.as_posix() or
@@ -306,6 +311,8 @@ class SyncService:
                            for meta in pages_log.values():
                                p = meta["obsidian"]["path"]
                                if p.startswith(old_prefix + "/"):
+                                   meta["_prev_path"] = p           # keep for this run only
+                                   meta["_skip_move"] = True        # child handled by parent
                                    meta["obsidian"]["path"] = p.replace(old_prefix,
                                                                         new_prefix, 1)
                            log_diff["moved"].append(f"{old_prefix}/ → {new_prefix}/")
@@ -315,8 +322,9 @@ class SyncService:
                    else:
                        # simple single-file move
                        abs_md.parent.mkdir(parents=True, exist_ok=True)
-                       shutil.move(str(old_abs), str(abs_md))
-                       log_diff["moved"].append(f"{old_path} → {md_path}")
+                       if not skip_move and old_abs.exists():
+                           shutil.move(str(old_abs), str(abs_md))
+                           log_diff["moved"].append(f"{old_path} → {md_path}")
                        # -- PATCH: Remove the old file if any remains (should not, but extra safety)
                        if old_abs.exists() and old_abs != abs_md:
                            _safe_remove(old_abs)
@@ -325,7 +333,8 @@ class SyncService:
                except Exception as e:
                    print(f"Move failed: {e}")
            
-               update_inbound_links(writer_root, old_path, md_path.as_posix())
+               if not skip_move:        # already done at prefix level
+                   update_inbound_links(writer_root, old_path, md_path.as_posix())
 
             # Write markdown if needed (never rewrite if unchanged)
             need_write = (
