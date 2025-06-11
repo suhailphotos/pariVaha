@@ -81,6 +81,15 @@ def _purge_empty_dirs(start: Path) -> None:
         # Directory not empty or permission issues – just stop
         pass
 
+def _safe_remove(path: Path):
+    try:
+        if path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    except Exception:
+        pass  # Already gone or permission denied
+
 def update_inbound_links(vault_root: Path, old_path: str, new_path: str):
     old_ref = old_path.replace('.md', '')
     new_ref = new_path.replace('.md', '')
@@ -239,47 +248,55 @@ class SyncService:
             old_parent_id = old_meta["parent_id"] if old_meta else None
             old_path = old_meta["obsidian"]["path"] if old_meta else None
 
+
             if old_meta and (old_path != md_path.as_posix() or
-                             old_parent_id != direct_parent_id):
-                old_abs = writer_root / old_path
-                try:
-                    # ───── decide whether we are moving a WHOLE FOLDER ──────
-                    is_root_rename   = (old_parent_id is None and direct_parent_id is None)
-                    has_children     = old_abs.parent.exists() and any(old_abs.parent.iterdir())
-                    folder_move_need = has_children  # rename OR parent-move
+                            old_parent_id != direct_parent_id):
+               old_abs = writer_root / old_path
+               try:
+                   # ───── decide whether we are moving a WHOLE FOLDER ──────
+                   is_root_rename   = (old_parent_id is None and direct_parent_id is None)
+                   has_children     = old_abs.parent.exists() and any(old_abs.parent.iterdir())
+                   folder_move_need = has_children  # rename OR parent-move
+           
+                   if folder_move_need:
+                       old_dir = old_abs.parent
+                       new_dir = abs_md.parent
+           
+                       if old_dir.resolve() != new_dir.resolve():
+                           # ensure target’s *parent* exists but NOT the folder itself
+                           new_dir.parent.mkdir(parents=True, exist_ok=True)
+                           if new_dir.exists():
+                               shutil.rmtree(new_dir)
+                           shutil.move(str(old_dir), str(new_dir))
+           
+                           old_prefix = old_dir.relative_to(writer_root).as_posix()
+                           new_prefix = new_dir.relative_to(writer_root).as_posix()
+           
+                           # patch every path in pages_log
+                           for meta in pages_log.values():
+                               p = meta["obsidian"]["path"]
+                               if p.startswith(old_prefix + "/"):
+                                   meta["obsidian"]["path"] = p.replace(old_prefix,
+                                                                        new_prefix, 1)
+                           log_diff["moved"].append(f"{old_prefix}/ → {new_prefix}/")
+                           # -- PATCH: Remove the old directory if any remains
+                           if old_dir.exists():
+                               _safe_remove(old_dir)
+                   else:
+                       # simple single-file move
+                       abs_md.parent.mkdir(parents=True, exist_ok=True)
+                       shutil.move(str(old_abs), str(abs_md))
+                       log_diff["moved"].append(f"{old_path} → {md_path}")
+                       # -- PATCH: Remove the old file if any remains (should not, but extra safety)
+                       if old_abs.exists() and old_abs != abs_md:
+                           _safe_remove(old_abs)
+                       # -- PATCH: Remove old parent dir if empty
+                       _purge_empty_dirs(old_abs.parent)
+               except Exception as e:
+                   print(f"Move failed: {e}")
+           
+               update_inbound_links(writer_root, old_path, md_path.as_posix())
 
-                    if folder_move_need:
-                        old_dir = old_abs.parent
-                        new_dir = abs_md.parent
-
-                        if old_dir.resolve() != new_dir.resolve():
-                            # ensure target’s *parent* exists but NOT the folder itself
-                            new_dir.parent.mkdir(parents=True, exist_ok=True)
-                            if new_dir.exists():
-                                shutil.rmtree(new_dir)
-                            shutil.move(str(old_dir), str(new_dir))
-
-                            old_prefix = old_dir.relative_to(writer_root).as_posix()
-                            new_prefix = new_dir.relative_to(writer_root).as_posix()
-
-                            # patch every path in pages_log
-                            for meta in pages_log.values():
-                                p = meta["obsidian"]["path"]
-                                if p.startswith(old_prefix + "/"):
-                                    meta["obsidian"]["path"] = p.replace(old_prefix,
-                                                                         new_prefix, 1)
-                            log_diff["moved"].append(f"{old_prefix}/ → {new_prefix}/")
-                    else:
-                        # simple single-file move
-                        abs_md.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(old_abs), str(abs_md))
-                        log_diff["moved"].append(f"{old_path} → {md_path}")
-
-                except Exception as e:
-                    print(f"Move failed: {e}")
-
-                update_inbound_links(writer_root, old_path, md_path.as_posix())
-    
             # Write markdown if needed (never rewrite if unchanged)
             need_write = (
                 not abs_md.exists()
