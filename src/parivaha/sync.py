@@ -323,8 +323,8 @@ class SyncService:
                 body.append("---")
     
                 if not is_root:
-                    parent_name = rel_dir.parent.name
-                    body.append(f"*Parent*: [[{parent_name}/{parent_name}]]")
+                    parent_md_rel = rel_dir.parent / rel_dir.parent.name
+                    body.append(f"*Parent*: [[{parent_md_rel.as_posix()}]]")
     
                 # inline canvas link if the checkbox is set
                 if canvas_checked:
@@ -417,8 +417,12 @@ class SyncService:
                 d += 1
             return d
 
-        for pg in sorted(page_map.values(), key=_depth):
-            write_page(pg)
+        # show progress as we write each affected page
+        total = len(page_map)
+        with progress(total, "Syncing pages") as bar:
+            for pg in sorted(page_map.values(), key=_depth):
+                write_page(pg)
+                bar.update(1)
     
         # 5. Handle deletions (clean up files & log, leave .canvas intact) -----
         # run this scan only if we processed deltas **or** hygiene is due
