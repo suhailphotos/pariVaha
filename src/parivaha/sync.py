@@ -309,16 +309,35 @@ class SyncService:
                 or old_path != md_path.as_posix()          # path / move change
             )
             if need_write:
+                # — compute checkbox early for inline Canvas line —
+                canvas_checked = (
+                    pg.get("properties", {})
+                      .get(notion_prop("canvas", back_map), {})
+                      .get("checkbox", False)
+                )
                 abs_md.parent.mkdir(parents=True, exist_ok=True)
                 is_root = (direct_parent_id is None)
+                # ─── new aesthetic body ─────────────────────────────
                 body = []
+                # extra separator so you get two '---' in a row
+                body.append("---")
+    
                 if not is_root:
-                    # link format identical to original code
                     parent_name = rel_dir.parent.name
                     body.append(f"*Parent*: [[{parent_name}/{parent_name}]]")
-
-                body.append(f"[Open in Notion](https://www.notion.so/{pid.replace('-','')})")
-                body.extend(["", "---", ""])
+    
+                # inline canvas link if the checkbox is set
+                if canvas_checked:
+                    body.append(f"*Canvas:* [[{rel_dir.name}/{title_str}.canvas]]")
+    
+                # blank line + separator before the Notion link
+                body.extend(["", "---"])
+    
+                # show Open in Notion as a bullet
+                body.append(f"- [Open in Notion](https://www.notion.so/{pid.replace('-','')})")
+    
+                # trailing separator
+                body.append("---")
                 writer.write_remote_page({
                     "id": pid,
                     "url": f"https://www.notion.so/{pid.replace('-','')}",
@@ -372,15 +391,6 @@ class SyncService:
             canvas_file = writer_root / rel_dir / f"{title_str}.canvas"
             if canvas_checked and not canvas_file.exists():
                 write_canvas_file(canvas_file, title_str)
-        
-            # ─── append a canvas-link bullet to the markdown if the .canvas exists ───
-            if canvas_file.exists():
-                canvas_link = f"- [[{rel_dir.name}/{title_str}.canvas]]"
-                post = frontmatter.load(abs_md)
-                if canvas_link not in post.content:
-                    post.content = post.content.rstrip() + "\n" + canvas_link + "\n"
-                    abs_md.write_text(frontmatter.dumps(post), encoding="utf-8")
-
         
             # ─── remove on un-check ────────────────────────────────────────
             if not canvas_checked and canvas_file.exists():
