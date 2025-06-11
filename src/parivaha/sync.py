@@ -109,6 +109,19 @@ def update_inbound_links(vault_root: Path, old_path: str, new_path: str):
         if new_text != text:
             md_file.write_text(new_text, encoding='utf-8')
 
+def _update_prefix_links(vault_root: Path, old_prefix: str, new_prefix: str) -> None:
+    """
+    Replace every wiki-link that starts with old_prefix/… so that the
+    whole subtree’s links stay valid after a branch move.
+    """
+    pat = rf'\[\[{re.escape(old_prefix)}/'
+    repl = f'[[{new_prefix}/'
+    for md in vault_root.rglob('*.md'):
+        txt = md.read_text('utf-8')
+        new_txt = re.sub(pat, repl, txt)
+        if new_txt != txt:
+            md.write_text(new_txt, encoding='utf-8')
+
 # ------------------------------ End Helpers ---------------------------------------
 
 class SyncService:
@@ -271,6 +284,18 @@ class SyncService:
            
                            old_prefix = old_dir.relative_to(writer_root).as_posix()
                            new_prefix = new_dir.relative_to(writer_root).as_posix()
+
+                           # ── 1 make sure *all* descendants get rewritten ──
+                           for cid, meta in list(pages_log.items()):
+                               if (cid not in page_map
+                                       and meta["obsidian"]["path"].startswith(old_prefix + "/")):
+                                   pg_child = nm.get_page(cid)
+                                   if pg_child:
+                                       page_map[cid] = pg_child
+
+                           # ── 2 fix inbound links for the whole subtree ──
+                           _update_prefix_links(writer_root, old_prefix, new_prefix)
+
 
                            # PATCH: Remove any old .md file in the new_dir that has the old folder's name
                            old_md_in_new = new_dir / f"{old_dir.name}.md"
