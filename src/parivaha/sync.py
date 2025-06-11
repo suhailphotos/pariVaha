@@ -372,6 +372,30 @@ class SyncService:
             canvas_file = writer_root / rel_dir / f"{title_str}.canvas"
             if canvas_checked and not canvas_file.exists():
                 write_canvas_file(canvas_file, title_str)
+        
+            # ─── append a canvas-link bullet to the markdown if the .canvas exists ───
+            if canvas_file.exists():
+                canvas_link = f"- [[{rel_dir.name}/{title_str}.canvas]]"
+                post = frontmatter.load(abs_md)
+                if canvas_link not in post.content:
+                    post.content = post.content.rstrip() + "\n" + canvas_link + "\n"
+                    abs_md.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+        
+            # ─── remove on un-check ────────────────────────────────────────
+            if not canvas_checked and canvas_file.exists():
+                # delete the .canvas file
+                canvas_file.unlink()
+                # strip out the link bullet from the .md
+                post = frontmatter.load(abs_md)
+                # remove any "- [[folder/file.canvas]]" lines
+                post.content = re.sub(
+                    rf"^- \[\[{re.escape(rel_dir.name)}/{re.escape(title_str)}\.canvas\]\]\n?",
+                    "",
+                    post.content,
+                    flags=re.MULTILINE
+                )
+                abs_md.write_text(frontmatter.dumps(post), encoding="utf-8")
     
         # 4. Write / move pages  ── roots first, leaves last
         def _depth(p):
