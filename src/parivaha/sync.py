@@ -271,6 +271,11 @@ class SyncService:
            
                            old_prefix = old_dir.relative_to(writer_root).as_posix()
                            new_prefix = new_dir.relative_to(writer_root).as_posix()
+
+                           # PATCH: Remove any old .md file in the new_dir that has the old folder's name
+                           old_md_in_new = new_dir / f"{old_dir.name}.md"
+                           if old_md_in_new.exists() and old_md_in_new != abs_md:
+                               _safe_remove(old_md_in_new)
            
                            # patch every path in pages_log
                            for meta in pages_log.values():
