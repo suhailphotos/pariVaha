@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import shutil
+import textwrap
 from datetime import datetime, timezone, timedelta
 from dateutil.parser import parse as parse_date
 from pathlib import Path
@@ -79,6 +80,27 @@ def _purge_empty_dirs(start: Path) -> None:
     except OSError:
         # Directory not empty or permission issues – just stop
         pass
+
+def update_inbound_links(vault_root: Path, old_path: str, new_path: str):
+    old_ref = old_path.replace('.md', '')
+    new_ref = new_path.replace('.md', '')
+    for md_file in vault_root.rglob('*.md'):
+        text = md_file.read_text(encoding='utf-8')
+        new_text = re.sub(
+            rf'\[\[{re.escape(old_ref)}\]\]',
+            f'[[{new_ref}]]',
+            text
+        )
+        # Also handle any direct .md links, just in case
+        new_text = re.sub(
+            rf'\[\[{re.escape(old_path)}\]\]',
+            f'[[{new_path}]]',
+            new_text
+        )
+        if new_text != text:
+            md_file.write_text(new_text, encoding='utf-8')
+
+# ------------------------------ End Helpers ---------------------------------------
 
 class SyncService:
     def __init__(self, cfg: Dict[str, Any]):
@@ -212,19 +234,51 @@ class SyncService:
             md_path = rel_dir / f"{title_str}.md"
             abs_md = writer_root / md_path
     
-            # Detect move (parent_id or path change)
+            # Detect move / rename -------------------------------------------
             old_meta = pages_log.get(pid)
             old_parent_id = old_meta["parent_id"] if old_meta else None
             old_path = old_meta["obsidian"]["path"] if old_meta else None
-            if old_meta and (old_path != md_path.as_posix() or old_parent_id != direct_parent_id):
+
+            if old_meta and (old_path != md_path.as_posix() or
+                             old_parent_id != direct_parent_id):
                 old_abs = writer_root / old_path
                 try:
-                    abs_md.parent.mkdir(parents=True, exist_ok=True)
-                    if old_abs.exists():
+                    # ───── decide whether we are moving a WHOLE FOLDER ──────
+                    is_root_rename   = (old_parent_id is None and direct_parent_id is None)
+                    has_children     = old_abs.parent.exists() and any(old_abs.parent.iterdir())
+                    folder_move_need = has_children  # rename OR parent-move
+
+                    if folder_move_need:
+                        old_dir = old_abs.parent
+                        new_dir = abs_md.parent
+
+                        if old_dir.resolve() != new_dir.resolve():
+                            # ensure target’s *parent* exists but NOT the folder itself
+                            new_dir.parent.mkdir(parents=True, exist_ok=True)
+                            if new_dir.exists():
+                                shutil.rmtree(new_dir)
+                            shutil.move(str(old_dir), str(new_dir))
+
+                            old_prefix = old_dir.relative_to(writer_root).as_posix()
+                            new_prefix = new_dir.relative_to(writer_root).as_posix()
+
+                            # patch every path in pages_log
+                            for meta in pages_log.values():
+                                p = meta["obsidian"]["path"]
+                                if p.startswith(old_prefix + "/"):
+                                    meta["obsidian"]["path"] = p.replace(old_prefix,
+                                                                         new_prefix, 1)
+                            log_diff["moved"].append(f"{old_prefix}/ → {new_prefix}/")
+                    else:
+                        # simple single-file move
+                        abs_md.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(old_abs), str(abs_md))
-                    log_diff["moved"].append(f"{old_path} → {md_path}")
+                        log_diff["moved"].append(f"{old_path} → {md_path}")
+
                 except Exception as e:
                     print(f"Move failed: {e}")
+
+                update_inbound_links(writer_root, old_path, md_path.as_posix())
     
             # Write markdown if needed (never rewrite if unchanged)
             need_write = (
@@ -297,8 +351,17 @@ class SyncService:
             if canvas_checked and not canvas_file.exists():
                 write_canvas_file(canvas_file, title_str)
     
-        # 4. Write or move every changed/touched page
-        for pg in page_map.values():
+        # 4. Write / move pages  ── roots first, leaves last
+        def _depth(p):
+            d = 0
+            cur = p
+            while cur.get("properties", {}).get("Parent item", {}).get("relation"):
+                pid = cur["properties"]["Parent item"]["relation"][0]["id"]
+                cur = page_map.get(pid) or {}
+                d += 1
+            return d
+
+        for pg in sorted(page_map.values(), key=_depth):
             write_page(pg)
     
         # 5. Handle deletions (clean up files & log, leave .canvas intact) -----
