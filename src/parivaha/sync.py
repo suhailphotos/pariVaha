@@ -481,22 +481,34 @@ class SyncService:
                 if not md_abs.exists():
                     continue
                 post = frontmatter.load(md_abs)
-                # clean old bullets / block
+        
+                # wipe every old sibling line or bullet (idempotent)
                 post.content = re.sub(
-                    r"^[ \t]*-\s+\[\[.*?\/.*?\]\]\s*\n?", "",
-                    post.content, flags=re.MULTILINE
+                    r"^\*Siblings\*?:[^\n]*\n?", "", post.content, flags=re.MULTILINE
                 )
                 post.content = re.sub(
-                    r"\*Siblings:\*[\s\S]*?(?:\n{2,}|$)", "",
-                    post.content, flags=re.MULTILINE
+                    r"^\- \[\[.*?\/.*?\]\]\s*\n?",    # legacy bullet form
+                    "", post.content, flags=re.MULTILINE
                 )
-                post.content = re.sub(r"\n{3,}", "\n\n", post.content)
-                # write single sibling if not tail
-                if i < len(root_ids_sorted) - 1:
-                    sib_id = root_ids_sorted[i + 1]
-                    sib_title = title(page_map.get(sib_id) or nm.get_page(sib_id))
-                    post.content = post.content.rstrip() + \
-                        f"\n\n*Siblings:*\n- [[{sib_title}/{sib_title}]]\n"
+        
+                # decide the single sibling to show
+                if len(root_ids_sorted) > 1:
+                    sib_id   = root_ids_sorted[i-1] if i else root_ids_sorted[i+1]
+                    sib_page = page_map.get(sib_id) or nm.get_page(sib_id)
+                    sib      = title(sib_page)
+                    sib_line = f"*Siblings*: [[{sib}/{sib}]]"
+                else:
+                    sib_line = "*Siblings*: _none_"
+        
+                # insert just after the FIRST body separator (‘---’ following YAML)
+                lines = post.content.splitlines()
+                try:
+                    insert_at = lines.index("---") + 1   # the extra separator you add
+                except ValueError:
+                    insert_at = 0                        # should never happen
+                lines.insert(insert_at, sib_line)
+        
+                post.content = "\n".join(lines) + "\n"
                 md_abs.write_text(frontmatter.dumps(post), encoding="utf-8")
 
         root_ids = [pid for pid, meta in pages_log.items()
